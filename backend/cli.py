@@ -215,6 +215,10 @@ async def _run_single(
     from backend.prompts import ChallengeMeta
     from backend.sandbox import cleanup_orphan_containers, configure_semaphore
 
+    # In one-model mode, always show model/tool debug output by default.
+    if len(model_specs) == 1:
+        setattr(settings, "always_debug_single_model", True)
+
     max_concurrent = settings.max_concurrent_challenges
     configure_semaphore(max_concurrent * len(model_specs))
     await cleanup_orphan_containers()

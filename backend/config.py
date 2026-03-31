@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from pydantic_settings import BaseSettings
 
 
@@ -28,10 +30,25 @@ class Settings(BaseSettings):
         """Get all configured OpenRouter keys (multi-key first, then single-key fallback)."""
         keys: list[str] = []
         if self.openrouter_api_keys:
-            raw = self.openrouter_api_keys.replace("\n", ",")
-            keys.extend([k.strip() for k in raw.split(",") if k.strip()])
+            raw = self.openrouter_api_keys
+            # Accept comma/newline/semicolon/space separated values.
+            parts = re.split(r"[\s,;]+", raw)
+            for p in parts:
+                k = p.strip().strip('"').strip("'")
+                if not k:
+                    continue
+                if k.startswith("sk-or-v1-"):
+                    keys.append(k)
         if self.openrouter_api_key and self.openrouter_api_key.strip():
-            key = self.openrouter_api_key.strip()
+            key = self.openrouter_api_key.strip().strip('"').strip("'")
             if key not in keys:
                 keys.append(key)
-        return keys
+        # Preserve order, drop duplicates.
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for k in keys:
+            if k in seen:
+                continue
+            seen.add(k)
+            deduped.append(k)
+        return deduped

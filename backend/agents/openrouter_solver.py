@@ -345,6 +345,7 @@ class OpenRouterSolver:
 
         debug_model_substr = os.getenv("CTF_AGENT_DEBUG_MODEL", "").strip()
         debug_enabled = bool(debug_model_substr) and (debug_model_substr in self.model_spec)
+        debug_enabled = debug_enabled or bool(getattr(self.settings, "always_debug_single_model", False))
         while not self.cancel_event.is_set():
             # Add an initial user prompt if we don't already have one (bump() may add one).
             if not appended_initial_prompt:
@@ -383,6 +384,9 @@ class OpenRouterSolver:
                 try:
                     key = next_openrouter_key(keys)
                     headers = {"Authorization": f"Bearer {key}"}
+                    if debug_enabled:
+                        masked = f"{key[:6]}...{key[-4:]}" if len(key) > 10 else "***"
+                        print(f"[DEBUG {self.model_id}] using key: {masked}")
                     async with httpx.AsyncClient(timeout=180.0) as client:
                         resp = await client.post(url, headers=headers, json=request_body)
                     resp.raise_for_status()
