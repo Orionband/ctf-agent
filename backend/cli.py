@@ -59,7 +59,7 @@ def _setup_logging(verbose: bool = False) -> None:
     "--gemini-rotate",
     "gemini_rotate",
     is_flag=True,
-    help="Use gemini-3-flash-preview first; on 429/503/502/504 switch to gemini-2.5-flash and alternate until success or retries exhausted.",
+    help="With default 3 OpenRouter models, adds Gemini (3-flash↔2.5-flash rotation). With --model gemini/..., Gemini-only with rotation.",
 )
 @click.option(
     "--check-keys",
@@ -101,9 +101,10 @@ def main(
     _setup_logging(verbose)
 
     settings = Settings()
+    gemini_rotate_with_defaults = False
     if gemini_rotate:
         if single_model and not single_model.strip().startswith("gemini/"):
-            console.print("[red]--gemini-rotate only applies to Gemini models; omit --model or use gemini/....[/red]")
+            console.print("[red]--gemini-rotate with --model requires gemini/... (or omit --model to add Gemini to the default 3 OpenRouter models).[/red]")
             sys.exit(1)
         if single_model and single_model.strip().startswith("gemini/"):
             mid = model_id_from_spec(single_model.strip())
@@ -113,9 +114,13 @@ def main(
                 chain = "gemini-3-flash-preview,gemini-2.5-flash"
         else:
             chain = "gemini-3-flash-preview,gemini-2.5-flash"
-            single_model = "gemini/gemini-3-flash-preview"
+            gemini_rotate_with_defaults = True
         settings = settings.model_copy(update={"gemini_rotate_chain": chain})
-    model_specs = _select_models(single_model, include_gemini)
+    model_specs = _select_models(
+        single_model,
+        include_gemini,
+        gemini_rotate_with_defaults=gemini_rotate_with_defaults,
+    )
     openrouter_keys = settings.get_openrouter_keys()
     gemini_keys = settings.get_gemini_keys()
 
@@ -241,16 +246,27 @@ async def _check_keys(keys: list[str], model_spec: str) -> None:
             console.print(f"  [{i}] {masked} -> [green]{auth_msg}[/green], [{color}]{probe_msg}[/{color}]")
 
 
-def _select_models(single_model: str | None, include_gemini: bool = False) -> list[str]:
+def _select_models(
+    single_model: str | None,
+    include_gemini: bool = False,
+    *,
+    gemini_rotate_with_defaults: bool = False,
+) -> list[str]:
     if not single_model:
         models = list(DEFAULT_MODELS)
-        if include_gemini and "gemini/gemini-flash-latest" not in models:
+        if gemini_rotate_with_defaults:
+            if "gemini/gemini-3-flash-preview" not in models:
+                models.append("gemini/gemini-3-flash-preview")
+        elif include_gemini and "gemini/gemini-flash-latest" not in models:
             models.append("gemini/gemini-flash-latest")
         return models
     spec = single_model.strip()
     if not spec:
         models = list(DEFAULT_MODELS)
-        if include_gemini and "gemini/gemini-flash-latest" not in models:
+        if gemini_rotate_with_defaults:
+            if "gemini/gemini-3-flash-preview" not in models:
+                models.append("gemini/gemini-3-flash-preview")
+        elif include_gemini and "gemini/gemini-flash-latest" not in models:
             models.append("gemini/gemini-flash-latest")
         return models
     if not spec.startswith("openrouter/") and not spec.startswith("gemini/"):

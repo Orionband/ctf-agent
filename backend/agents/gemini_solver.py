@@ -45,6 +45,30 @@ _GEMINI_TRANSIENT_HTTP = frozenset({429, 500, 502, 503, 504})
 _GEMINI_MAX_HTTP_ATTEMPTS = 28
 
 
+def _gemini_quota_cooldown_seconds(payload: dict[str, Any] | str | None) -> float | None:
+    """If error body is the 'exceeded quota / wait longer' shape, return seconds to sleep (default 20)."""
+    if payload is None:
+        return None
+    if isinstance(payload, dict):
+        err = payload.get("error")
+        if not isinstance(err, dict):
+            return None
+        text = str(err.get("message", "") or "")
+    else:
+        text = str(payload)
+    t = re.sub(r"\s+", " ", text.lower()).strip()
+    if not t:
+        return None
+    if "exceeded your current quota" in t or ("exceeded" in t and "quota" in t):
+        m = re.search(r"(\d+)\s*(?:seconds?|secs?\b)", t)
+        if m:
+            return float(min(max(int(m.group(1)), 5), 120))
+        return 20.0
+    if "wait longer" in t:
+        return 20.0
+    return None
+
+
 def _collect_function_calls(parts: list[dict[str, Any]]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for p in parts:
@@ -190,10 +214,13 @@ class GeminiSolver:
                     self._findings = f"Gemini: invalid JSON in 200 response: {e}"
                     return None
 
+            parsed_err: dict[str, Any] | None = None
             try:
-                body = json.dumps(resp.json(), ensure_ascii=False)[:900]
+                parsed_err = resp.json()
+                body = json.dumps(parsed_err, ensure_ascii=False)[:900]
             except Exception:
                 body = resp.text[:900]
+                parsed_err = None
             code = resp.status_code
             last_detail = f"HTTP {code}: {body}"
             self._findings = f"Gemini {last_detail}"
@@ -210,6 +237,20 @@ class GeminiSolver:
 
             if code in _GEMINI_TRANSIENT_HTTP:
                 self._gemini_last_error_status = QUOTA_ERROR
+                quota_wait: float | None = None
+                if code == 429:
+                    quota_wait = _gemini_quota_cooldown_seconds(parsed_err)
+                    if quota_wait is None:
+                        quota_wait = _gemini_quota_cooldown_seconds(body)
+                    if quota_wait is not None:
+                        logger.warning(
+                            "[%s] Gemini quota message — sleeping %.0fs before retry/rotate (attempt %s/%s)",
+                            self.agent_name,
+                            quota_wait,
+                            attempt + 1,
+                            _GEMINI_MAX_HTTP_ATTEMPTS,
+                        )
+                        await asyncio.sleep(quota_wait)
                 rotated = self._rotate_gemini_model()
                 if rotated:
                     logger.warning(
@@ -228,7 +269,10 @@ class GeminiSolver:
                         attempt + 1,
                         _GEMINI_MAX_HTTP_ATTEMPTS,
                     )
-                await asyncio.sleep(min(backoff_s * (1.35**min(attempt, 12)), 45.0))
+                if quota_wait is not None:
+                    await asyncio.sleep(1.0)
+                else:
+                    await asyncio.sleep(min(backoff_s * (1.35**min(attempt, 12)), 45.0))
                 continue
 
             logger.warning("[%s] %s", self.agent_name, self._findings[:600])
