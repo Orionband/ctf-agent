@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     max_attempts_per_challenge: int = 3
     container_memory_limit: str = "16g"
 
+    # Debug
+    always_debug_single_model: bool = False
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
     def get_openrouter_keys(self) -> list[str]:

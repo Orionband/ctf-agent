@@ -217,7 +217,7 @@ async def _run_single(
 
     # In one-model mode, always show model/tool debug output by default.
     if len(model_specs) == 1:
-        setattr(settings, "always_debug_single_model", True)
+        settings = settings.model_copy(update={"always_debug_single_model": True})
 
     max_concurrent = settings.max_concurrent_challenges
     configure_semaphore(max_concurrent * len(model_specs))
