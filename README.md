@@ -51,7 +51,7 @@ Default model lineup:
 
 - `qwen/qwen3.6-plus-preview:free`
 - `nvidia/nemotron-3-super-120b-a12b:free`
-- `stepfun/step-3.5-flash:free`
+- `minimax/minimax-m2.5:free`
 
 Run just one model with:
 

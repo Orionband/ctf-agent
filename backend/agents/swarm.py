@@ -193,11 +193,20 @@ class ChallengeSwarm:
 
             if result.status in (GAVE_UP, ERROR):
                 if result.step_count == 0 and result.cost_usd == 0:
-                    logger.warning(
-                        "[%s/%s] Broken (0 steps, $0) — not bumping",
-                        self.meta.name,
-                        model_spec,
-                    )
+                    detail = (result.findings_summary or "").strip()
+                    if detail:
+                        logger.warning(
+                            "[%s/%s] Broken (0 steps, $0) — not bumping — %s",
+                            self.meta.name,
+                            model_spec,
+                            detail[:500],
+                        )
+                    else:
+                        logger.warning(
+                            "[%s/%s] Broken (0 steps, $0) — not bumping",
+                            self.meta.name,
+                            model_spec,
+                        )
                     break
 
                 if result.status == ERROR:

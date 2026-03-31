@@ -40,6 +40,32 @@ FlagPattern = re.compile(r"FLAG\s*:\s*(.+)", re.IGNORECASE)
 
 ToolHandler = Callable[..., Awaitable[str]]
 
+_MAX_TEXT_ONLY_NUDGES = 5
+
+
+def _collect_function_calls(parts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for p in parts:
+        fc = p.get("functionCall") or p.get("function_call")
+        if isinstance(fc, dict):
+            out.append(fc)
+    return out
+
+
+def _coerce_function_args(fc: dict[str, Any]) -> dict[str, Any]:
+    raw = fc.get("args")
+    if raw is None:
+        raw = fc.get("arguments")
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw) if raw.strip() else {}
+        except Exception:
+            parsed = {}
+        raw = parsed
+    if not isinstance(raw, dict):
+        return {}
+    return raw
+
 
 @dataclass
 class _ToolDef:
@@ -47,6 +73,18 @@ class _ToolDef:
     description: str
     parameters_schema: dict[str, Any]
     handler: ToolHandler
+
+
+def _gemini_function_decl(t: _ToolDef) -> dict[str, Any]:
+    """Omit empty `parameters` — Gemini rejects some zero-arg schemas."""
+    decl: dict[str, Any] = {"name": t.name, "description": t.description}
+    ps = t.parameters_schema
+    if not ps:
+        return decl
+    if ps.get("type") == "object" and isinstance(ps.get("properties"), dict) and len(ps["properties"]) == 0:
+        return decl
+    decl["parameters"] = ps
+    return decl
 
 
 class GeminiSolver:
@@ -203,6 +241,7 @@ class GeminiSolver:
         debug_enabled = bool(debug_model_substr) and (debug_model_substr in self.model_spec)
         debug_enabled = debug_enabled or bool(getattr(self.settings, "always_debug_single_model", False))
 
+        text_only_rounds = 0
         while not self.cancel_event.is_set():
             keys = self.settings.get_gemini_keys()
             if not keys:
@@ -219,18 +258,7 @@ class GeminiSolver:
             request_body = {
                 "systemInstruction": {"parts": [{"text": self._system_prompt}]},
                 "contents": self._contents[-200:],
-                "tools": [
-                    {
-                        "functionDeclarations": [
-                            {
-                                "name": t.name,
-                                "description": t.description,
-                                "parameters": t.parameters_schema,
-                            }
-                            for t in self._tool_defs.values()
-                        ]
-                    }
-                ],
+                "tools": [{"functionDeclarations": [_gemini_function_decl(t) for t in self._tool_defs.values()]}],
                 "toolConfig": {"functionCallingConfig": {"mode": "AUTO"}},
             }
 
@@ -242,14 +270,18 @@ class GeminiSolver:
             except httpx.HTTPStatusError as e:
                 body = ""
                 try:
-                    body = json.dumps(e.response.json(), ensure_ascii=False)[:500]
+                    body = json.dumps(e.response.json(), ensure_ascii=False)[:800]
                 except Exception:
-                    body = str(e)[:500]
-                self._findings = f"Gemini HTTP {e.response.status_code if e.response else '?'}: {body}"
+                    body = str(e)[:800]
+                code = e.response.status_code if e.response else None
+                self._findings = f"Gemini HTTP {code}: {body}"
+                if code not in (401, 403, 429):
+                    logger.warning("[%s] %s", self.agent_name, self._findings[:600])
                 return self._result(QUOTA_ERROR if (e.response and e.response.status_code in (401, 403, 429)) else ERROR)
             except Exception as e:
+                logger.warning("[%s] Gemini request failed: %s", self.agent_name, e, exc_info=True)
                 self._findings = f"Gemini error: {e}"
-                return self._result(QUOTA_ERROR)
+                return self._result(ERROR)
 
             usage = data.get("usageMetadata") or {}
             self.cost_tracker.record_tokens(
@@ -262,16 +294,35 @@ class GeminiSolver:
                 duration_seconds=0.0,
             )
 
-            cand = (data.get("candidates") or [{}])[0]
+            candidates = data.get("candidates") or []
+            if not candidates:
+                pf = data.get("promptFeedback") or {}
+                self._findings = f"Gemini returned no candidates (blocked or empty). promptFeedback={json.dumps(pf, ensure_ascii=False)[:800]}"
+                logger.warning("[%s] %s", self.agent_name, self._findings)
+                return self._result(ERROR)
+
+            cand = candidates[0]
+            finish = cand.get("finishReason") or ""
+            if finish in (
+                "SAFETY",
+                "RECITATION",
+                "BLOCKLIST",
+                "PROHIBITED_CONTENT",
+                "SPII",
+                "MALFORMED_FUNCTION_CALL",
+            ):
+                self._findings = f"Gemini stopped ({finish}). First candidate: {json.dumps(cand, ensure_ascii=False)[:1200]}"
+                logger.warning("[%s] %s", self.agent_name, self._findings[:500])
+                return self._result(ERROR)
+
             content = cand.get("content") or {}
             parts = content.get("parts") or []
             text_parts: list[str] = []
-            function_calls: list[dict[str, Any]] = []
+            function_calls = _collect_function_calls(parts)
+
             for p in parts:
                 if "text" in p:
                     text_parts.append(p.get("text") or "")
-                if "functionCall" in p:
-                    function_calls.append(p["functionCall"])
 
             assistant_text = "\n".join([t for t in text_parts if t]).strip()
             if debug_enabled:
@@ -281,7 +332,7 @@ class GeminiSolver:
                 print("=" * 80)
             self.tracer.model_response(assistant_text[:500], self._step_count)
 
-            # Record model response in contents.
+            # Record model response in contents (preserve thought_signature / all part fields).
             self._contents.append({"role": "model", "parts": parts})
 
             if not function_calls:
@@ -292,14 +343,39 @@ class GeminiSolver:
                         self._findings = f"Flag found via model output: {self._flag}"
                 if self._confirmed and self._flag:
                     return self._result(FLAG_FOUND)
+                if text_only_rounds < _MAX_TEXT_ONLY_NUDGES:
+                    text_only_rounds += 1
+                    self._contents.append(
+                        {
+                            "role": "user",
+                            "parts": [
+                                {
+                                    "text": (
+                                        "You must call the provided tools to solve this challenge. "
+                                        "Do not answer with only plain text. Start with `list_files` "
+                                        "or `bash` to inspect `/challenge/challenge` and `/challenge/workspace`."
+                                    )
+                                }
+                            ],
+                        }
+                    )
+                    continue
+                self._findings = (
+                    "Gemini replied without calling tools after several nudges "
+                    "(or only returned a flag pattern in text without submit_flag)."
+                )
                 return self._result(GAVE_UP)
 
-            # Execute function calls and append functionResponse parts.
+            text_only_rounds = 0
+
+            # Execute tool calls; send one user turn with all functionResponse parts (Gemini expects this).
+            response_parts: list[dict[str, Any]] = []
             for fc in function_calls:
                 total_tool_calls += 1
                 self._step_count += 1
                 name = fc.get("name")
-                args = fc.get("args") or {}
+                args = _coerce_function_args(fc)
+                fc_id = fc.get("id")
 
                 if name not in self._tool_defs:
                     result = f"Unknown tool requested: {name}"
@@ -321,24 +397,23 @@ class GeminiSolver:
                     if name == "submit_flag" and any(m in result for m in CORRECT_MARKERS):
                         pass
 
-                self._contents.append(
-                    {
-                        "role": "user",
-                        "parts": [
-                            {
-                                "functionResponse": {
-                                    "name": name,
-                                    "response": {"name": name, "content": result},
-                                }
-                            }
-                        ],
-                    }
-                )
+                fr_body: dict[str, Any] = {
+                    "name": name,
+                    "response": {"result": result},
+                }
+                if fc_id:
+                    fr_body["id"] = fc_id
+                response_parts.append({"functionResponse": fr_body})
 
                 if self._confirmed and self._flag:
+                    self._contents.append({"role": "user", "parts": response_parts})
                     return self._result(FLAG_FOUND)
                 if total_tool_calls >= max_tool_calls:
+                    self._contents.append({"role": "user", "parts": response_parts})
                     return self._result(GAVE_UP)
+
+            if response_parts:
+                self._contents.append({"role": "user", "parts": response_parts})
 
         return self._result(CANCELLED)
 
