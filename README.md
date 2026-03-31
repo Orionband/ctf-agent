@@ -61,6 +61,12 @@ ctf-solve path/to/challenge --model openrouter/qwen/qwen3.6-plus-preview:free
 
 You can also omit the prefix: `--model qwen/qwen3.6-plus-preview:free`.
 
+Check all configured keys quickly:
+
+```bash
+ctf-solve --check-keys --model openrouter/qwen/qwen3.6-plus-preview:free
+```
+
 When a flag is found, it prints in the terminal. You submit it to the competition site yourself if there is one.
 
 ### Optional: many challenges at once

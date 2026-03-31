@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import sys
 from pathlib import Path
 
 import click
+import httpx
 from rich.console import Console
 
 from backend.config import Settings
@@ -48,6 +50,11 @@ def _setup_logging(verbose: bool = False) -> None:
     help="Run only one model (e.g. openrouter/qwen/qwen3.6-plus-preview:free).",
 )
 @click.option(
+    "--check-keys",
+    is_flag=True,
+    help="Validate each configured OpenRouter key and print per-key status, then exit.",
+)
+@click.option(
     "--no-submit",
     is_flag=True,
     help="Dry run — solvers will not lock in a flag via submit_flag.",
@@ -57,6 +64,7 @@ def main(
     challenge_dir: Path | None,
     watch_dir: Path | None,
     single_model: str | None,
+    check_keys: bool,
     no_submit: bool,
     verbose: bool,
 ) -> None:
@@ -80,15 +88,21 @@ def main(
 
     settings = Settings()
     model_specs = _select_models(single_model)
+    keys = settings.get_openrouter_keys()
 
-    if not settings.get_openrouter_keys():
+    if not keys:
         console.print("[red]Set OPENROUTER_API_KEY or OPENROUTER_API_KEYS in .env or the environment.[/red]")
         sys.exit(1)
+
+    if check_keys:
+        asyncio.run(_check_keys(keys, model_specs[0]))
+        return
 
     if watch_dir is not None:
         console.print("[bold]CTF Agent[/bold] — watch mode (coordinator)")
         console.print(f"  Watching: {watch_dir}")
         console.print(f"  Models: {', '.join(model_specs)}")
+        console.print(f"  Keys: {len(keys)} configured")
         console.print()
         asyncio.run(_run_coordinator(settings, str(watch_dir), no_submit, model_specs))
         return
@@ -107,8 +121,76 @@ def main(
     console.print("[bold]CTF Agent[/bold]")
     console.print(f"  Folder: {challenge_dir.resolve()}")
     console.print(f"  Models: {', '.join(model_specs)}")
+    console.print(f"  Keys: {len(keys)} configured")
     console.print()
     asyncio.run(_run_single(settings, str(challenge_dir), no_submit, model_specs))
+
+
+def _mask_key(key: str) -> str:
+    if len(key) <= 10:
+        return "***"
+    return f"{key[:6]}...{key[-4:]}"
+
+
+async def _check_keys(keys: list[str], model_spec: str) -> None:
+    """Run lightweight per-key diagnostics against OpenRouter."""
+    model_id = model_spec.split("/", 1)[1] if model_spec.startswith("openrouter/") else model_spec
+    console.print("[bold]OpenRouter key diagnostics[/bold]")
+    console.print(f"  Model probe: {model_id}")
+    console.print(f"  Keys found: {len(keys)}")
+    console.print()
+
+    async with httpx.AsyncClient(timeout=25.0) as client:
+        for i, key in enumerate(keys, 1):
+            masked = _mask_key(key)
+            headers = {"Authorization": f"Bearer {key}"}
+
+            # Check auth first
+            auth_ok = False
+            auth_msg = ""
+            try:
+                r = await client.get("https://openrouter.ai/api/v1/models", headers=headers)
+                if r.status_code == 200:
+                    auth_ok = True
+                    auth_msg = "auth ok"
+                else:
+                    try:
+                        body = json.dumps(r.json(), ensure_ascii=False)[:180]
+                    except Exception:
+                        body = r.text[:180]
+                    auth_msg = f"auth fail HTTP {r.status_code}: {body}"
+            except Exception as e:
+                auth_msg = f"auth request error: {e}"
+
+            if not auth_ok:
+                console.print(f"  [{i}] {masked} -> [red]{auth_msg}[/red]")
+                continue
+
+            # Tiny model probe
+            probe_msg = ""
+            try:
+                probe = await client.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers=headers,
+                    json={
+                        "model": model_id,
+                        "messages": [{"role": "user", "content": "Reply with OK only."}],
+                        "max_tokens": 4,
+                    },
+                )
+                if probe.status_code == 200:
+                    probe_msg = "probe ok"
+                else:
+                    try:
+                        body = json.dumps(probe.json(), ensure_ascii=False)[:220]
+                    except Exception:
+                        body = probe.text[:220]
+                    probe_msg = f"probe HTTP {probe.status_code}: {body}"
+            except Exception as e:
+                probe_msg = f"probe error: {e}"
+
+            color = "green" if probe_msg == "probe ok" else "yellow"
+            console.print(f"  [{i}] {masked} -> [green]{auth_msg}[/green], [{color}]{probe_msg}[/{color}]")
 
 
 def _select_models(single_model: str | None) -> list[str]:

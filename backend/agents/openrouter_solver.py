@@ -466,6 +466,11 @@ class OpenRouterSolver:
                                 "[%s] OpenRouter free-tier daily quota exhausted for available keys/accounts",
                                 self.agent_name,
                             )
+                        logger.warning(
+                            "[%s] Final 429 body: %s",
+                            self.agent_name,
+                            body_msg[:300],
+                        )
                         self._findings = f"OpenRouter 429 after retries: {body_msg}"
                         self.tracer.event("error", error=self._findings)
                         return self._result(QUOTA_ERROR, run_cost=None, run_steps=self._step_count)
