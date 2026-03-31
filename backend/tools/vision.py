@@ -12,7 +12,7 @@ async def view_image(
 ) -> str | BinaryContent:
     """Visually inspect an image — use this IMMEDIATELY on any image challenge.
 
-    Searches /challenge/distfiles/ first, then /challenge/workspace/.
+    Searches /challenge/challenge/, then /challenge/distfiles/, then /challenge/workspace/.
     Returns an error if the image cannot be loaded (fix magic bytes first if corrupt).
     filename: Filename to view, e.g. 'flag.png' or 'fixed.jpg'.
     """

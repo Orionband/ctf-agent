@@ -65,7 +65,7 @@ async def do_write_file(sandbox, path: str, content: str) -> str:
         return f"Error writing file: {e}"
 
 
-async def do_list_files(sandbox, path: str = "/challenge/distfiles") -> str:
+async def do_list_files(sandbox, path: str = "/challenge/challenge") -> str:
     result = await sandbox.exec(f"ls -la {shlex.quote(path)}")
     out = result.stdout.strip()
     if result.exit_code != 0:
@@ -73,18 +73,15 @@ async def do_list_files(sandbox, path: str = "/challenge/distfiles") -> str:
     return out or f"{path} is empty."
 
 
-async def do_submit_flag(ctfd, challenge_name: str, flag: str) -> tuple[str, bool]:
-    """Submit a flag. Returns (display_message, is_confirmed)."""
+async def do_submit_flag(flag: str) -> tuple[str, bool]:
+    """Record a flag locally (no platform submission). Returns (display_message, is_confirmed)."""
     flag = flag.strip()
     if not flag:
         return "Empty flag — nothing to submit.", False
-
-    try:
-        result = await ctfd.submit_flag(challenge_name, flag)
-        is_confirmed = result.status in ("correct", "already_solved")
-        return result.display, is_confirmed
-    except Exception as e:
-        return f"submit_flag error: {e}", False
+    return (
+        "CORRECT — flag accepted locally. Copy this flag into the competition submission when ready.",
+        True,
+    )
 
 
 def _is_internal_url(url: str) -> bool:
@@ -208,7 +205,15 @@ async def do_view_image(sandbox, filename: str, use_vision: bool) -> tuple[bytes
     search_paths = []
     if filename.startswith("/"):
         search_paths.append(filename)
-    search_paths.extend([f"/challenge/distfiles/{basename}", f"/challenge/workspace/{basename}"])
+    rel = filename.lstrip("/")
+    search_paths.extend(
+        [
+            f"/challenge/challenge/{rel}",
+            f"/challenge/challenge/{basename}",
+            f"/challenge/distfiles/{basename}",
+            f"/challenge/workspace/{basename}",
+        ]
+    )
 
     for path in search_paths:
         try:

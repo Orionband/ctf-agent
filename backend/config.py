@@ -6,23 +6,11 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    # CTFd
-    ctfd_url: str = "http://localhost:8000"
-    ctfd_user: str = "admin"
-    ctfd_pass: str = "admin"
-    ctfd_token: str = ""
+    # OpenRouter (required for all LLM calls)
+    openrouter_api_key: str = ""
 
-    # API Keys
-    anthropic_api_key: str = ""
-    openai_api_key: str = ""
-    gemini_api_key: str = ""
-
-    # Provider-specific (optional, for Bedrock/Azure/Zen fallback)
-    aws_region: str = "us-east-1"
-    aws_bearer_token: str = ""
-    azure_openai_endpoint: str = ""
-    azure_openai_api_key: str = ""
-    opencode_zen_api_key: str = ""
+    # Optional: coordinator uses this model spec (openrouter/...); empty = first DEFAULT_MODELS entry
+    coordinator_model: str = ""
 
     # Infra
     sandbox_image: str = "ctf-sandbox"

@@ -29,110 +29,121 @@ def _setup_logging(verbose: bool = False) -> None:
 
 
 @click.command()
-@click.option("--ctfd-url", default=None, help="CTFd URL (overrides .env)")
-@click.option("--ctfd-token", default=None, help="CTFd API token (overrides .env)")
-@click.option("--image", default="ctf-sandbox", help="Docker sandbox image name")
-@click.option("--models", multiple=True, help="Model specs (default: all configured)")
-@click.option("--challenge", default=None, help="Solve a single challenge directory")
-@click.option("--challenges-dir", default="challenges", help="Directory for challenge files")
-@click.option("--no-submit", is_flag=True, help="Dry run — don't submit flags")
-@click.option("--coordinator-model", default=None, help="Model for coordinator (default: claude-opus-4-6)")
-@click.option("--coordinator", default="claude", type=click.Choice(["claude", "codex"]), help="Coordinator backend")
-@click.option("--max-challenges", default=10, type=int, help="Max challenges solved concurrently")
-@click.option("--msg-port", default=0, type=int, help="Operator message port (0 = auto)")
+@click.argument(
+    "challenge_dir",
+    required=False,
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+)
+@click.option(
+    "--watch",
+    "watch_dir",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+    default=None,
+    help="Watch a directory of challenge subfolders and run the coordinator (advanced).",
+)
+@click.option(
+    "--no-submit",
+    is_flag=True,
+    help="Dry run — solvers will not lock in a flag via submit_flag.",
+)
 @click.option("-v", "--verbose", is_flag=True, help="Verbose logging")
 def main(
-    ctfd_url: str | None,
-    ctfd_token: str | None,
-    image: str,
-    models: tuple[str, ...],
-    challenge: str | None,
-    challenges_dir: str,
+    challenge_dir: Path | None,
+    watch_dir: Path | None,
     no_submit: bool,
-    coordinator_model: str | None,
-    coordinator: str,
-    max_challenges: int,
-    msg_port: int,
     verbose: bool,
 ) -> None:
-    """CTF Agent — multi-model solver swarm.
+    """Solve CTF challenges from a folder (OpenRouter, three models). Set OPENROUTER_API_KEY.
 
-    Run without --challenge to start the full coordinator (Ctrl+C to stop).
+    Put challenge text in challenge.txt or README.md, optional hints.txt or hints/, drop other files anywhere in the folder.
+
+    Examples:
+
+        ctf-solve ./my-challenge
+
+        ctf-solve
+
+    If you omit the path, a folder named "challenge" in the current directory is used.
+
+    Watch mode (multiple challenge subfolders):
+
+        ctf-solve --watch ./challenges
     """
     _setup_logging(verbose)
 
-    settings = Settings(sandbox_image=image)
-    if ctfd_url:
-        settings.ctfd_url = ctfd_url
-    if ctfd_token:
-        settings.ctfd_token = ctfd_token
-    settings.max_concurrent_challenges = max_challenges
+    settings = Settings()
 
-    model_specs = list(models) if models else list(DEFAULT_MODELS)
+    if not settings.openrouter_api_key:
+        console.print("[red]Set OPENROUTER_API_KEY in .env or the environment.[/red]")
+        sys.exit(1)
 
-    console.print("[bold]CTF Agent v2[/bold]")
-    console.print(f"  CTFd: {settings.ctfd_url}")
-    console.print(f"  Models: {', '.join(model_specs)}")
-    console.print(f"  Image: {settings.sandbox_image}")
-    console.print(f"  Max challenges: {max_challenges}")
+    if watch_dir is not None:
+        console.print("[bold]CTF Agent[/bold] — watch mode (coordinator)")
+        console.print(f"  Watching: {watch_dir}")
+        console.print(f"  Models: {', '.join(DEFAULT_MODELS)}")
+        console.print()
+        asyncio.run(_run_coordinator(settings, str(watch_dir), no_submit))
+        return
+
+    if challenge_dir is None:
+        default = Path("challenge")
+        if default.is_dir():
+            challenge_dir = default
+        else:
+            console.print(
+                "[red]Pass a challenge folder, e.g. [bold]ctf-solve ./my-challenge[/bold], "
+                "or create a [bold]challenge[/bold] directory here.[/red]"
+            )
+            sys.exit(1)
+
+    console.print("[bold]CTF Agent[/bold]")
+    console.print(f"  Folder: {challenge_dir.resolve()}")
+    console.print(f"  Models: {', '.join(DEFAULT_MODELS)}")
     console.print()
-
-    if challenge:
-        asyncio.run(_run_single(settings, challenge, model_specs, no_submit, max_challenges))
-    else:
-        asyncio.run(_run_coordinator(settings, model_specs, challenges_dir, no_submit, coordinator_model, coordinator, max_challenges, msg_port))
+    asyncio.run(_run_single(settings, str(challenge_dir), no_submit))
 
 
 async def _run_single(
     settings: Settings,
     challenge_dir: str,
-    model_specs: list[str],
     no_submit: bool,
-    max_challenges: int,
 ) -> None:
-    """Run a single challenge with a swarm."""
     from backend.agents.swarm import ChallengeSwarm
     from backend.cost_tracker import CostTracker
-    from backend.ctfd import CTFdClient
     from backend.prompts import ChallengeMeta
     from backend.sandbox import cleanup_orphan_containers, configure_semaphore
 
-    max_containers = max_challenges * len(model_specs)
-    configure_semaphore(max_containers)
+    max_concurrent = settings.max_concurrent_challenges
+    configure_semaphore(max_concurrent * len(DEFAULT_MODELS))
     await cleanup_orphan_containers()
 
-    challenge_path = Path(challenge_dir)
-    meta_path = challenge_path / "metadata.yml"
-    if not meta_path.exists():
-        console.print(f"[red]No metadata.yml found in {challenge_dir}[/red]")
+    try:
+        meta = ChallengeMeta.from_directory(challenge_dir)
+    except Exception as e:
+        console.print(f"[red]Could not load challenge folder: {e}[/red]")
         sys.exit(1)
 
-    meta = ChallengeMeta.from_yaml(meta_path)
-    console.print(f"[bold]Challenge:[/bold] {meta.name} ({meta.category}, {meta.value} pts)")
+    console.print(f"[bold]Challenge:[/bold] {meta.name}")
 
-    ctfd = CTFdClient(
-        base_url=settings.ctfd_url,
-        token=settings.ctfd_token,
-        username=settings.ctfd_user,
-        password=settings.ctfd_pass,
-    )
     cost_tracker = CostTracker()
-
     swarm = ChallengeSwarm(
-        challenge_dir=str(challenge_path),
+        challenge_dir=challenge_dir,
         meta=meta,
-        ctfd=ctfd,
         cost_tracker=cost_tracker,
         settings=settings,
-        model_specs=model_specs,
+        model_specs=list(DEFAULT_MODELS),
         no_submit=no_submit,
     )
 
     try:
         result = await swarm.run()
         from backend.solver_base import FLAG_FOUND
+
         if result and result.status == FLAG_FOUND:
-            console.print(f"\n[bold green]FLAG FOUND:[/bold green] {result.flag}")
+            console.print(f"\n[bold green]FLAG:[/bold green] {result.flag}")
+            console.print(
+                "[dim]Submit this flag to the competition yourself if the event uses a website.[/dim]"
+            )
         else:
             console.print("\n[bold red]No flag found.[/bold red]")
 
@@ -141,47 +152,30 @@ async def _run_single(
             console.print(f"  {agent_name}: {cost_tracker.format_usage(agent_name)}")
         console.print(f"  [bold]Total: ${cost_tracker.total_cost_usd:.2f}[/bold]")
     finally:
-        await ctfd.close()
+        pass
 
 
 async def _run_coordinator(
     settings: Settings,
-    model_specs: list[str],
-    challenges_dir: str,
+    challenges_root: str,
     no_submit: bool,
-    coordinator_model: str | None,
-    coordinator_backend: str,
-    max_challenges: int,
-    msg_port: int = 0,
 ) -> None:
-    """Run the full coordinator (continuous until Ctrl+C)."""
     from backend.sandbox import cleanup_orphan_containers, configure_semaphore
 
-    max_containers = max_challenges * len(model_specs)
-    configure_semaphore(max_containers)
+    configure_semaphore(settings.max_concurrent_challenges * len(DEFAULT_MODELS))
     await cleanup_orphan_containers()
-    console.print(f"[bold]Starting coordinator ({coordinator_backend}, Ctrl+C to stop)...[/bold]\n")
+    console.print("[bold]Coordinator[/bold] (Ctrl+C to stop)...\n")
 
-    if coordinator_backend == "codex":
-        from backend.agents.codex_coordinator import run_codex_coordinator
-        results = await run_codex_coordinator(
-            settings=settings,
-            model_specs=model_specs,
-            challenges_root=challenges_dir,
-            no_submit=no_submit,
-            coordinator_model=coordinator_model,
-            msg_port=msg_port,
-        )
-    else:
-        from backend.agents.claude_coordinator import run_claude_coordinator
-        results = await run_claude_coordinator(
-            settings=settings,
-            model_specs=model_specs,
-            challenges_root=challenges_dir,
-            no_submit=no_submit,
-            coordinator_model=coordinator_model,
-            msg_port=msg_port,
-        )
+    from backend.agents.openrouter_coordinator import run_openrouter_coordinator
+
+    results = await run_openrouter_coordinator(
+        settings=settings,
+        model_specs=list(DEFAULT_MODELS),
+        challenges_root=challenges_root,
+        no_submit=no_submit,
+        coordinator_model=settings.coordinator_model or None,
+        msg_port=0,
+    )
 
     console.print("\n[bold]Final Results:[/bold]")
     for challenge, data in results.get("results", {}).items():

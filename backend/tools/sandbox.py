@@ -18,7 +18,7 @@ from backend.tools.core import (
 async def bash(ctx: RunContext[SolverDeps], command: str, timeout_seconds: int = 60) -> str:
     """Execute a bash command inside the sandboxed Docker container.
 
-    Distfiles are at /challenge/distfiles/ (read-only).
+    Challenge files are under /challenge/challenge/ (read-only). Legacy distfiles may also be at /challenge/distfiles/.
     Write generated/repaired files to /challenge/workspace/ (writable).
     Challenge services are reachable via host.docker.internal.
     Run `cat /tools.txt` to see all installed tools.
@@ -36,7 +36,7 @@ async def write_file(ctx: RunContext[SolverDeps], path: str, content: str) -> st
     return await do_write_file(ctx.deps.sandbox, path, content)
 
 
-async def list_files(ctx: RunContext[SolverDeps], path: str = "/challenge/distfiles") -> str:
+async def list_files(ctx: RunContext[SolverDeps], path: str = "/challenge/challenge") -> str:
     """List files in a directory inside the container."""
     return await do_list_files(ctx.deps.sandbox, path)
 

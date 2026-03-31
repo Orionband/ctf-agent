@@ -15,7 +15,6 @@ from pydantic_ai.toolsets.abstract import ToolsetTool
 from pydantic_ai.toolsets.wrapper import WrapperToolset
 
 from backend.cost_tracker import CostTracker
-from backend.ctfd import CTFdClient
 from backend.deps import SolverDeps
 from backend.loop_detect import LOOP_WARNING_MESSAGE, LoopDetector
 from backend.models import (
@@ -26,7 +25,7 @@ from backend.models import (
     supports_vision,
 )
 from backend.output_types import FlagFound
-from backend.prompts import ChallengeMeta, build_prompt, list_distfiles
+from backend.prompts import ChallengeMeta, build_prompt, list_challenge_attachments
 from backend.sandbox import DockerSandbox
 from backend.solver_base import CANCELLED, CORRECT_MARKERS, ERROR, FLAG_FOUND, GAVE_UP, SolverResult
 from backend.tools.flag import submit_flag
@@ -111,7 +110,6 @@ class Solver:
         model_spec: str,
         challenge_dir: str,
         meta: ChallengeMeta,
-        ctfd: CTFdClient,
         cost_tracker: CostTracker,
         settings: object,
         cancel_event: asyncio.Event | None = None,
@@ -122,7 +120,6 @@ class Solver:
         self.model_id = model_id_from_spec(model_spec)
         self.challenge_dir = challenge_dir
         self.meta = meta
-        self.ctfd = ctfd
         self.cost_tracker = cost_tracker
         self.settings = settings
         self.cancel_event = cancel_event or asyncio.Event()
@@ -136,7 +133,6 @@ class Solver:
         self.use_vision = supports_vision(model_spec)
         self.deps = SolverDeps(
             sandbox=self.sandbox,
-            ctfd=ctfd,
             challenge_dir=challenge_dir,
             challenge_name=meta.name,
             workspace_dir="",
@@ -162,10 +158,10 @@ class Solver:
         arch_result = await self.sandbox.exec("uname -m", timeout_s=10)
         container_arch = arch_result.stdout.strip() or "unknown"
 
-        distfile_names = list_distfiles(self.challenge_dir)
+        attachments = list_challenge_attachments(self.challenge_dir)
         system_prompt = build_prompt(
             self.meta,
-            distfile_names,
+            attachments,
             container_arch=container_arch,
         )
 
@@ -244,10 +240,8 @@ class Solver:
             if isinstance(output, FlagFound):
                 self._flag = output.flag
                 self._findings = f"Flag found via {output.method}: {output.flag}"
-                # In dry-run mode, structured output is sufficient (can't verify via CTFd)
                 if self.deps.no_submit:
                     self._confirmed = True
-            # CTFd confirmation always counts (the primary path when not in dry-run)
             if self.deps.confirmed_flag:
                 self._confirmed = True
                 self._flag = self._flag or self.deps.confirmed_flag

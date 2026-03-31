@@ -1,4 +1,4 @@
-"""Shared coordinator tool logic — called by both Claude SDK and Codex coordinators."""
+"""Shared coordinator tool logic — local challenge folders only."""
 
 from __future__ import annotations
 
@@ -10,39 +10,65 @@ from pathlib import Path
 from backend.deps import CoordinatorDeps
 from backend.prompts import ChallengeMeta
 from backend.solver_base import FLAG_FOUND
+from backend.tools.core import do_submit_flag as record_local_flag
 
 logger = logging.getLogger(__name__)
 
 
+def _scan_challenges_root(deps: CoordinatorDeps) -> None:
+    """Load any new challenge subfolders from disk into deps.challenge_dirs / challenge_metas."""
+    root = Path(deps.challenges_root)
+    if not root.is_dir():
+        return
+    for d in root.iterdir():
+        if not d.is_dir() or d.name.startswith("."):
+            continue
+        try:
+            meta = ChallengeMeta.from_directory(d)
+        except Exception as e:
+            logger.warning("Skip %s: %s", d, e)
+            continue
+        key = d.name
+        if key not in deps.challenge_dirs:
+            deps.challenge_dirs[key] = str(d)
+            deps.challenge_metas[key] = meta
+
+
 async def do_fetch_challenges(deps: CoordinatorDeps) -> str:
-    challenges = await deps.ctfd.fetch_all_challenges()
-    solved = await deps.ctfd.fetch_solved_names()
+    _scan_challenges_root(deps)
     result = [
         {
-            "name": ch.get("name", "?"),
-            "category": ch.get("category", "?"),
-            "value": ch.get("value", 0),
-            "solves": ch.get("solves", 0),
-            "status": "SOLVED" if ch.get("name") in solved else "unsolved",
-            "description": (ch.get("description") or "")[:200],
+            "folder": key,
+            "name": meta.name,
+            "category": meta.category,
+            "value": meta.value,
+            "solves": meta.solves,
+            "status": "SOLVED" if key in deps.solved_challenges else "unsolved",
+            "description": (meta.description or "")[:200],
         }
-        for ch in challenges
+        for key, meta in deps.challenge_metas.items()
     ]
     return json.dumps(result, indent=2)
 
 
 async def do_get_solve_status(deps: CoordinatorDeps) -> str:
-    solved = await deps.ctfd.fetch_solved_names()
     swarm_status = {name: swarm.get_status() for name, swarm in deps.swarms.items()}
-    return json.dumps({"solved": sorted(solved), "active_swarms": swarm_status}, indent=2)
+    return json.dumps(
+        {
+            "solved_this_session": sorted(deps.solved_challenges),
+            "active_swarms": swarm_status,
+        },
+        indent=2,
+    )
 
 
 async def do_spawn_swarm(deps: CoordinatorDeps, challenge_name: str) -> str:
-    # Retire ALL finished swarms before checking capacity
+    _scan_challenges_root(deps)
+
     finished = [
-        name for name, swarm in deps.swarms.items()
-        if swarm.cancel_event.is_set()
-        or (name in deps.swarm_tasks and deps.swarm_tasks[name].done())
+        name
+        for name, swarm in deps.swarms.items()
+        if swarm.cancel_event.is_set() or (name in deps.swarm_tasks and deps.swarm_tasks[name].done())
     ]
     for name in finished:
         del deps.swarms[name]
@@ -55,23 +81,17 @@ async def do_spawn_swarm(deps: CoordinatorDeps, challenge_name: str) -> str:
     if challenge_name in deps.swarms:
         return f"Swarm still running for {challenge_name}"
 
-    # Auto-pull challenge if needed
     if challenge_name not in deps.challenge_dirs:
-        challenges = await deps.ctfd.fetch_all_challenges()
-        ch_data = next((c for c in challenges if c.get("name") == challenge_name), None)
-        if not ch_data:
-            return f"Challenge '{challenge_name}' not found on CTFd"
-        output_dir = str(Path(deps.challenges_root))
-        ch_dir = await deps.ctfd.pull_challenge(ch_data, output_dir)
-        deps.challenge_dirs[challenge_name] = ch_dir
-        deps.challenge_metas[challenge_name] = ChallengeMeta.from_yaml(Path(ch_dir) / "metadata.yml")
+        return (
+            f"Challenge folder '{challenge_name}' not found under {deps.challenges_root}. "
+            "Add a subfolder with your challenge text and files, then try again."
+        )
 
     from backend.agents.swarm import ChallengeSwarm
 
     swarm = ChallengeSwarm(
         challenge_dir=deps.challenge_dirs[challenge_name],
         meta=deps.challenge_metas[challenge_name],
-        ctfd=deps.ctfd,
         cost_tracker=deps.cost_tracker,
         settings=deps.settings,
         model_specs=deps.model_specs,
@@ -82,12 +102,12 @@ async def do_spawn_swarm(deps: CoordinatorDeps, challenge_name: str) -> str:
 
     async def _run_and_cleanup() -> None:
         result = await swarm.run()
-        # Flag already submitted/confirmed by solver's submit_fn — just record the result
         if result and result.status == FLAG_FOUND:
             deps.results[challenge_name] = {
                 "flag": result.flag,
-                "submit": "DRY RUN" if deps.no_submit else "confirmed by solver",
+                "note": "local session — submit flag to the competition manually if required",
             }
+            deps.solved_challenges.add(challenge_name)
 
     task = asyncio.create_task(_run_and_cleanup(), name=f"swarm-{challenge_name}")
     deps.swarm_tasks[challenge_name] = task
@@ -102,13 +122,14 @@ async def do_check_swarm_status(deps: CoordinatorDeps, challenge_name: str) -> s
 
 
 async def do_submit_flag(deps: CoordinatorDeps, challenge_name: str, flag: str) -> str:
+    """Coordinator-only: record intent (solvers use the submit_flag tool)."""
     if deps.no_submit:
-        return f'DRY RUN — would submit "{flag.strip()}" for {challenge_name}'
-    try:
-        result = await deps.ctfd.submit_flag(challenge_name, flag)
-        return result.display
-    except Exception as e:
-        return f"submit_flag error: {e}"
+        return f'DRY RUN — would accept "{flag.strip()}" for {challenge_name}'
+    _, ok = await record_local_flag(flag)
+    if ok:
+        deps.solved_challenges.add(challenge_name.strip())
+        return f'CORRECT — recorded for {challenge_name}. Flag: {flag.strip()}'
+    return "Could not record flag."
 
 
 async def do_kill_swarm(deps: CoordinatorDeps, challenge_name: str) -> str:
@@ -159,7 +180,9 @@ async def do_read_solver_trace(deps: CoordinatorDeps, challenge_name: str, model
                 elif t in ("finish", "error", "bump", "turn_failed"):
                     summary.append(f"** {t}: {json.dumps({k:v for k,v in d.items() if k != 'ts'})}")
                 elif t == "usage":
-                    summary.append(f"usage: in={d.get('input_tokens',0)} out={d.get('output_tokens',0)} cost=${d.get('cost_usd',0):.4f}")
+                    summary.append(
+                        f"usage: in={d.get('input_tokens',0)} out={d.get('output_tokens',0)} cost=${d.get('cost_usd',0):.4f}"
+                    )
                 else:
                     summary.append(f"{t}: {str(d)[:80]}")
             except Exception:

@@ -114,14 +114,16 @@ class DockerSandbox:
             self.workspace_dir = tempfile.mkdtemp(prefix="ctf-workspace-")
 
             challenge_root = Path(self.challenge_dir).resolve()
-            distfiles = str(challenge_root / "distfiles")
-            meta_yml = str(challenge_root / "metadata.yml")
+            distfiles = challenge_root / "distfiles"
+            meta_yml = challenge_root / "metadata.yml"
 
             binds: list[str] = [f"{self.workspace_dir}:/challenge/workspace:rw"]
-            if Path(distfiles).exists():
+            # Full challenge tree (text, hints, attachments — any layout)
+            binds.append(f"{challenge_root}:/challenge/challenge:ro")
+            if distfiles.is_dir():
                 binds.append(f"{distfiles}:/challenge/distfiles:ro")
-            if Path(meta_yml).exists():
-                binds.append(f"{meta_yml}:/challenge/metadata.yml:ro")
+            if meta_yml.is_file():
+                binds.append(f"{str(meta_yml)}:/challenge/metadata.yml:ro")
 
             config = {
                 "Image": self.image,

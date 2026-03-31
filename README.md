@@ -1,152 +1,73 @@
 # CTF Agent
 
-Autonomous CTF (Capture The Flag) solver that races multiple AI models against challenges in parallel. Built in a weekend, we used it to solve all 52/52 challenges and win **1st place at BSidesSF 2026 CTF**.
+Autonomous CTF solver that runs **three OpenRouter models in parallel** on whatever you put in a folder. **You do not need a YAML file** — optional `metadata.yml` is still supported if you want points/category metadata.
 
-Built by [Veria Labs](https://verialabs.com), founded by members of [.;,;.](https://ctftime.org/team/222911) (smiley), the [#1 US CTF team on CTFTime in 2024 and 2025](https://ctftime.org/stats/2024/US). We build AI agents that find and exploit real security vulnerabilities for large enterprises.
 
-## Results
+## Setup
 
-| Competition | Challenges Solved | Result |
-|-------------|:-:|--------|
-| **BSidesSF 2026** | 52/52 (100%) | **1st place ($1,500)** |
+1. Install: `pip install -e .`
+2. Build the Docker sandbox: `docker build -f sandbox/Dockerfile.sandbox -t ctf-sandbox .`
+3. Create a `.env` file with:
 
-The agent solves challenges across all categories — pwn, rev, crypto, forensics, web, and misc.
+   ```env
+   OPENROUTER_API_KEY=sk-or-v1-...
+   ```
 
-## How It Works
+## Run
 
-A **coordinator** LLM manages the competition while **solver swarms** attack individual challenges. Each swarm runs multiple models simultaneously — the first to find the flag wins.
+Put your challenge in a directory:
 
-```
-                        +-----------------+
-                        |  CTFd Platform  |
-                        +--------+--------+
-                                 |
-                        +--------v--------+
-                        |  Poller (5s)    |
-                        +--------+--------+
-                                 |
-                        +--------v--------+
-                        | Coordinator LLM |
-                        | (Claude/Codex)  |
-                        +--------+--------+
-                                 |
-              +------------------+------------------+
-              |                  |                  |
-     +--------v--------+ +------v---------+ +------v---------+
-     | Swarm:          | | Swarm:         | | Swarm:         |
-     | challenge-1     | | challenge-2    | | challenge-N    |
-     |                 | |                | |                |
-     |  Opus (med)     | |  Opus (med)    | |                |
-     |  Opus (max)     | |  Opus (max)    | |     ...        |
-     |  GPT-5.4        | |  GPT-5.4       | |                |
-     |  GPT-5.4-mini   | |  GPT-5.4-mini  | |                |
-     |  GPT-5.3-codex  | |  GPT-5.3-codex | |                |
-     +--------+--------+ +--------+-------+ +----------------+
-              |                    |
-     +--------v--------+  +-------v--------+
-     | Docker Sandbox  |  | Docker Sandbox |
-     | (isolated)      |  | (isolated)     |
-     |                 |  |                |
-     | pwntools, r2,   |  | pwntools, r2,  |
-     | gdb, python...  |  | gdb, python... |
-     +-----------------+  +----------------+
-```
+| What | Where |
+|------|--------|
+| Challenge statement | `challenge.txt`, `description.txt`, `README.md`, or `challenge.md` (first one found wins) |
+| Hints | `hints.txt`, `hint.txt`, `hints.md`, or a `hints/` folder with text files |
+| Attachments | Any files anywhere in the folder (or use a `distfiles/` subfolder — both work) |
+| Remote service | Optional `connection.txt` with `nc ...` or a URL |
 
-Each solver runs in an isolated Docker container with CTF tools pre-installed. Solvers never give up — they keep trying different approaches until the flag is found.
-
-## Quick Start
+Then:
 
 ```bash
-# Install
-uv sync
-
-# Build sandbox image
-docker build -f sandbox/Dockerfile.sandbox -t ctf-sandbox .
-
-# Configure credentials
-cp .env.example .env
-# Edit .env with your API keys and CTFd token
-
-# Run against a CTFd instance
-uv run ctf-solve \
-  --ctfd-url https://ctf.example.com \
-  --ctfd-token ctfd_your_token \
-  --challenges-dir challenges \
-  --max-challenges 10 \
-  -v
+ctf-solve path/to/that/folder
 ```
 
-## Coordinator Backends
+If the folder is named `challenge` in the current directory, you can run:
 
 ```bash
-# Claude SDK coordinator (default)
-uv run ctf-solve --coordinator claude ...
-
-# Codex coordinator (GPT-5.4 via JSON-RPC)
-uv run ctf-solve --coordinator codex ...
+ctf-solve
 ```
 
-## Solver Models
+The agent always uses these three models together:
 
-Default model lineup (configurable in `backend/models.py`):
+- `qwen/qwen3.6-plus-preview:free`
+- `nvidia/nemotron-3-super-120b-a12b:free`
+- `stepfun/step-3.5-flash:free`
 
-| Model | Provider | Notes |
-|-------|----------|-------|
-| Claude Opus 4.6 (medium) | Claude SDK | Balanced speed/quality |
-| Claude Opus 4.6 (max) | Claude SDK | Deep reasoning |
-| GPT-5.4 | Codex | Best overall solver |
-| GPT-5.4-mini | Codex | Fast, good for easy challenges |
-| GPT-5.3-codex | Codex | Reasoning model (xhigh effort) |
+When a flag is found, it prints in the terminal. You submit it to the competition site yourself if there is one.
 
-## Sandbox Tooling
-
-Each solver gets an isolated Docker container pre-loaded with CTF tools:
-
-| Category | Tools |
-|----------|-------|
-| **Binary** | radare2, GDB, objdump, binwalk, strings, readelf |
-| **Pwn** | pwntools, ROPgadget, angr, unicorn, capstone |
-| **Crypto** | SageMath, RsaCtfTool, z3, gmpy2, pycryptodome, cado-nfs |
-| **Forensics** | volatility3, Sleuthkit (mmls/fls/icat), foremost, exiftool |
-| **Stego** | steghide, stegseek, zsteg, ImageMagick, tesseract OCR |
-| **Web** | curl, nmap, Python requests, flask |
-| **Misc** | ffmpeg, sox, Pillow, numpy, scipy, PyTorch, podman |
-
-## Features
-
-- **Multi-model racing** — multiple AI models attack each challenge simultaneously
-- **Auto-spawn** — new challenges detected and attacked automatically
-- **Coordinator LLM** — reads solver traces, crafts targeted technical guidance
-- **Cross-solver insights** — findings shared between models via message bus
-- **Docker sandboxes** — isolated containers with full CTF tooling
-- **Operator messaging** — send hints to running solvers mid-competition
-
-## Configuration
-
-Copy `.env.example` to `.env` and fill in your keys:
+### Optional: many challenges at once
 
 ```bash
-cp .env.example .env
+ctf-solve --watch path/to/parent
 ```
 
-```env
-CTFD_URL=https://ctf.example.com
-CTFD_TOKEN=ctfd_your_token
-ANTHROPIC_API_KEY=sk-ant-...
-OPENAI_API_KEY=sk-...
-GEMINI_API_KEY=...
+Each **subfolder** of `parent` is one challenge. A coordinator process manages them (Ctrl+C to stop). This is only needed if you are juggling multiple challenges; most of the time use a single folder and `ctf-solve` as above.
+
+### Dry run
+
+```bash
+ctf-solve ./my-challenge --no-submit
 ```
 
-All settings can also be passed as environment variables or CLI flags.
+## Optional `metadata.yml`
+
+If you already have a `metadata.yml` (points, category, extra hints), it is merged in. Plain folders without YAML work fine.
 
 ## Requirements
 
-- Python 3.14+
+- Python 3.13+
 - Docker
-- API keys for at least one provider (Anthropic, OpenAI, Google)
-- `codex` CLI (for Codex solver/coordinator)
-- `claude` CLI (bundled with claude-agent-sdk)
+- OpenRouter API key
 
 ## Acknowledgements
 
-- [es3n1n/Eruditus](https://github.com/es3n1n/Eruditus) — CTFd interaction and HTML helpers in `pull_challenges.py`
+- [Pydantic AI OpenRouter](https://ai.pydantic.dev/models/openrouter/)

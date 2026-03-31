@@ -1,15 +1,13 @@
 [project]
 name = "ctf-agent-two"
 version = "0.1.0"
-description = "CTF agent v2 — multi-model solver swarm"
-requires-python = ">=3.14"
+description = "CTF agent — OpenRouter multi-model solver swarm"
+requires-python = ">=3.13"
 dependencies = [
-    "pydantic-ai[bedrock,openai,google]",
+    "pydantic-ai>=1.70",
     "pydantic-settings",
     "genai-prices",
-    "boto3",
     "aiodocker",
-    "claude-agent-sdk",
     "httpx",
     "pyyaml",
     "rich",
@@ -28,6 +26,14 @@ build-backend = "hatchling.build"
 [tool.uv]
 package = true
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.0",
+    "pytest-asyncio>=1.3",
+    "ruff>=0.14",
+    "ty>=0.0.2",
+]
+
 [dependency-groups]
 dev = [
     "pytest>=9.0",
@@ -40,7 +46,7 @@ dev = [
 packages = ["backend"]
 
 [tool.ruff]
-target-version = "py314"
+target-version = "py313"
 line-length = 100
 
 [tool.ruff.lint]
@@ -54,4 +60,4 @@ known-first-party = ["backend"]
 unresolved-import = "ignore"
 
 [tool.ty.environment]
-python-version = "3.14"
+python-version = "3.13"
