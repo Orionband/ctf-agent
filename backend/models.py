@@ -54,6 +54,11 @@ def resolve_model_settings(spec: str) -> ModelSettings:
     return OpenRouterModelSettings(
         max_tokens=128_000,
         openrouter_reasoning={"enabled": True},
+        # Pydantic AI's OpenAI-model backend may send `tool_choice` when tools are
+        # present. Some OpenRouter providers/models don't support it, which causes
+        # a 404 "No endpoints found that support the provided 'tool_choice' value."
+        # This forces routing to only providers that support the request params.
+        openrouter_provider={"require_parameters": True},
     )
 
 
