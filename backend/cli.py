@@ -50,6 +50,12 @@ def _setup_logging(verbose: bool = False) -> None:
     help="Run only one model (e.g. openrouter/qwen/qwen3.6-plus-preview:free).",
 )
 @click.option(
+    "--gemini",
+    "include_gemini",
+    is_flag=True,
+    help="Include Gemini direct API model (gemini/gemini-flash-latest) in the solver lineup.",
+)
+@click.option(
     "--check-keys",
     is_flag=True,
     help="Validate each configured OpenRouter key and print per-key status, then exit.",
@@ -64,6 +70,7 @@ def main(
     challenge_dir: Path | None,
     watch_dir: Path | None,
     single_model: str | None,
+    include_gemini: bool,
     check_keys: bool,
     no_submit: bool,
     verbose: bool,
@@ -87,22 +94,35 @@ def main(
     _setup_logging(verbose)
 
     settings = Settings()
-    model_specs = _select_models(single_model)
-    keys = settings.get_openrouter_keys()
+    model_specs = _select_models(single_model, include_gemini)
+    openrouter_keys = settings.get_openrouter_keys()
+    gemini_keys = settings.get_gemini_keys()
 
-    if not keys:
+    needs_openrouter = any(m.startswith("openrouter/") for m in model_specs)
+    needs_gemini = any(m.startswith("gemini/") for m in model_specs)
+
+    if needs_openrouter and not openrouter_keys:
         console.print("[red]Set OPENROUTER_API_KEY or OPENROUTER_API_KEYS in .env or the environment.[/red]")
+        sys.exit(1)
+    if needs_gemini and not gemini_keys:
+        console.print("[red]Set GEMINI_API_KEY or GEMINI_API_KEYS in .env or the environment.[/red]")
         sys.exit(1)
 
     if check_keys:
-        asyncio.run(_check_keys(keys, model_specs[0]))
+        if needs_openrouter:
+            asyncio.run(_check_keys(openrouter_keys, model_specs[0]))
+        else:
+            console.print("[yellow]--check-keys currently checks OpenRouter keys. Pick an openrouter model.[/yellow]")
         return
 
     if watch_dir is not None:
         console.print("[bold]CTF Agent[/bold] — watch mode (coordinator)")
         console.print(f"  Watching: {watch_dir}")
         console.print(f"  Models: {', '.join(model_specs)}")
-        console.print(f"  Keys: {len(keys)} configured")
+        if needs_openrouter:
+            console.print(f"  OpenRouter keys: {len(openrouter_keys)} configured")
+        if needs_gemini:
+            console.print(f"  Gemini keys: {len(gemini_keys)} configured")
         console.print()
         asyncio.run(_run_coordinator(settings, str(watch_dir), no_submit, model_specs))
         return
@@ -121,7 +141,10 @@ def main(
     console.print("[bold]CTF Agent[/bold]")
     console.print(f"  Folder: {challenge_dir.resolve()}")
     console.print(f"  Models: {', '.join(model_specs)}")
-    console.print(f"  Keys: {len(keys)} configured")
+    if needs_openrouter:
+        console.print(f"  OpenRouter keys: {len(openrouter_keys)} configured")
+    if needs_gemini:
+        console.print(f"  Gemini keys: {len(gemini_keys)} configured")
     console.print()
     asyncio.run(_run_single(settings, str(challenge_dir), no_submit, model_specs))
 
@@ -193,14 +216,23 @@ async def _check_keys(keys: list[str], model_spec: str) -> None:
             console.print(f"  [{i}] {masked} -> [green]{auth_msg}[/green], [{color}]{probe_msg}[/{color}]")
 
 
-def _select_models(single_model: str | None) -> list[str]:
+def _select_models(single_model: str | None, include_gemini: bool = False) -> list[str]:
     if not single_model:
-        return list(DEFAULT_MODELS)
+        models = list(DEFAULT_MODELS)
+        if include_gemini and "gemini/gemini-flash-latest" not in models:
+            models.append("gemini/gemini-flash-latest")
+        return models
     spec = single_model.strip()
     if not spec:
-        return list(DEFAULT_MODELS)
-    if "/" not in spec or not spec.startswith("openrouter/"):
-        spec = f"openrouter/{spec}"
+        models = list(DEFAULT_MODELS)
+        if include_gemini and "gemini/gemini-flash-latest" not in models:
+            models.append("gemini/gemini-flash-latest")
+        return models
+    if not spec.startswith("openrouter/") and not spec.startswith("gemini/"):
+        if spec.startswith("gemini-") or spec.startswith("models/gemini"):
+            spec = f"gemini/{spec.replace('models/', '')}"
+        else:
+            spec = f"openrouter/{spec}"
     return [spec]
 
 

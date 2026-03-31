@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from backend.agents.gemini_solver import GeminiSolver
 from backend.agents.openrouter_solver import OpenRouterSolver
 from backend.cost_tracker import CostTracker
 from backend.message_bus import ChallengeMessageBus
@@ -52,15 +53,25 @@ class ChallengeSwarm:
     _last_submit_time: dict[str, float] = field(default_factory=dict)
     message_bus: ChallengeMessageBus = field(default_factory=ChallengeMessageBus)
 
-    def _create_solver(self, model_spec: str) -> OpenRouterSolver:
-        solver = OpenRouterSolver(
-            model_spec=model_spec,
-            challenge_dir=self.challenge_dir,
-            meta=self.meta,
-            cost_tracker=self.cost_tracker,
-            settings=self.settings,
-            cancel_event=self.cancel_event,
-        )
+    def _create_solver(self, model_spec: str):
+        if model_spec.startswith("gemini/"):
+            solver = GeminiSolver(
+                model_spec=model_spec,
+                challenge_dir=self.challenge_dir,
+                meta=self.meta,
+                cost_tracker=self.cost_tracker,
+                settings=self.settings,
+                cancel_event=self.cancel_event,
+            )
+        else:
+            solver = OpenRouterSolver(
+                model_spec=model_spec,
+                challenge_dir=self.challenge_dir,
+                meta=self.meta,
+                cost_tracker=self.cost_tracker,
+                settings=self.settings,
+                cancel_event=self.cancel_event,
+            )
         solver.deps.message_bus = self.message_bus
         solver.deps.model_spec = model_spec
         solver.deps.no_submit = self.no_submit

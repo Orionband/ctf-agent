@@ -61,6 +61,18 @@ ctf-solve path/to/challenge --model openrouter/qwen/qwen3.6-plus-preview:free
 
 You can also omit the prefix: `--model qwen/qwen3.6-plus-preview:free`.
 
+Include Gemini via direct Gemini API:
+
+```bash
+ctf-solve ./my-challenge --gemini
+```
+
+Single-model Gemini:
+
+```bash
+ctf-solve ./my-challenge --model gemini/gemini-flash-latest
+```
+
 Check all configured keys quickly:
 
 ```bash
