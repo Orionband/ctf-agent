@@ -42,6 +42,11 @@ Rules:
 - submit_flag from the coordinator is optional — solvers normally report flags via their own tool
 """
 
+COORDINATOR_SHUTDOWN_PROMPT = """\
+You write short markdown session wrap-ups for a CTF coordinator. You have no tools — output text only.
+Use headings and bullets. Be concrete (challenge names, flags, technical leads from the snapshot).
+"""
+
 
 async def tool_fetch_challenges(ctx: RunContext[CoordinatorDeps]) -> str:
     return await do_fetch_challenges(ctx.deps)
@@ -123,6 +128,13 @@ async def run_openrouter_coordinator(
         toolsets=[_CO_TOOLS],
     )
 
+    shutdown_agent = Agent(
+        model,
+        deps_type=CoordinatorDeps,
+        system_prompt=COORDINATOR_SHUTDOWN_PROMPT,
+        model_settings=model_settings,
+    )
+
     async def turn_fn(message: str) -> None:
         logger.debug("Coordinator prompt: %s", message[:200])
         from pydantic_ai.usage import UsageLimits
@@ -137,4 +149,24 @@ async def run_openrouter_coordinator(
             duration_seconds=0.0,
         )
 
-    return await run_event_loop(deps, cost_tracker, turn_fn)
+    async def on_shutdown(_deps: CoordinatorDeps, snapshot: str) -> str | None:
+        from pydantic_ai.usage import UsageLimits
+
+        prompt = (
+            "The coordinator session is stopping (operator interrupted or process ended).\n\n"
+            "From the snapshot only, summarize for the operator.\n\n"
+            f"{snapshot}"
+        )
+        result = await shutdown_agent.run(prompt, deps=_deps, usage_limits=UsageLimits(request_limit=16))
+        usage = result.usage()
+        cost_tracker.record(
+            "coordinator_shutdown",
+            usage,
+            model_id_from_spec(co_spec),
+            provider_spec=provider_from_spec(co_spec),
+            duration_seconds=0.0,
+        )
+        out = result.output
+        return str(out) if out is not None else None
+
+    return await run_event_loop(deps, cost_tracker, turn_fn, on_shutdown=on_shutdown)

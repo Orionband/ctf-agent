@@ -366,6 +366,15 @@ async def _run_coordinator(
         console.print(f"  {challenge}: {data.get('flag', 'no flag')}")
     console.print(f"\n[bold]Total cost: ${results.get('total_cost_usd', 0):.2f}[/bold]")
 
+    snap = (results.get("findings_snapshot") or "").strip()
+    if snap:
+        console.print("\n[bold]Session findings snapshot[/bold]")
+        console.print(snap)
+    summary = (results.get("coordinator_shutdown_summary") or "").strip()
+    if summary:
+        console.print("\n[bold]Coordinator shutdown summary[/bold]")
+        console.print(summary)
+
 
 @click.command()
 @click.argument("message")

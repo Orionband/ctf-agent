@@ -19,6 +19,47 @@ from backend.prompts import ChallengeMeta
 logger = logging.getLogger(__name__)
 
 TurnFn = Callable[[str], Coroutine[Any, Any, None]]
+OnShutdownFn = Callable[[CoordinatorDeps, str], Coroutine[Any, Any, str | None]]
+
+
+def format_coordinator_findings_snapshot(deps: CoordinatorDeps, max_finding_len: int = 600) -> str:
+    """Structured text of session state for logs and shutdown prompts."""
+    lines: list[str] = []
+    lines.append("=== Session findings snapshot ===")
+    lines.append(f"Challenges root: {deps.challenges_root}")
+    lines.append(f"Solved this session: {sorted(deps.solved_challenges) or 'none'}")
+    if deps.results:
+        lines.append("Recorded results:")
+        for ch, data in sorted(deps.results.items()):
+            lines.append(f"  - {ch}: flag={data.get('flag', '?')!r}")
+    all_ch = sorted(deps.challenge_metas.keys())
+    pending_tasks = [n for n, t in deps.swarm_tasks.items() if not t.done()]
+    if pending_tasks:
+        lines.append(f"Swarm tasks still running (may be cancelled next): {pending_tasks}")
+    for ch in all_ch:
+        if ch in deps.solved_challenges:
+            continue
+        swarm = deps.swarms.get(ch)
+        if swarm:
+            try:
+                st = swarm.get_status()
+            except Exception as e:
+                lines.append(f"[{ch}] status error: {e}")
+                continue
+            win = st.get("winner")
+            lines.append(f"[{ch}] unsolved; winner={win!r}; cancelled={st.get('cancelled')}")
+            agents = st.get("agents") or {}
+            for spec, info in agents.items():
+                fin = (info.get("findings") or "").strip()
+                status = info.get("status", "")
+                if fin:
+                    excerpt = fin if len(fin) <= max_finding_len else fin[: max_finding_len - 3] + "..."
+                    lines.append(f"    · {spec} ({status}): {excerpt}")
+                else:
+                    lines.append(f"    · {spec} ({status}): (no findings text yet)")
+        else:
+            lines.append(f"[{ch}] unsolved; no active swarm object (not running or already torn down)")
+    return "\n".join(lines)
 
 
 def build_deps(
@@ -65,6 +106,8 @@ async def run_event_loop(
     cost_tracker: CostTracker,
     turn_fn: TurnFn,
     status_interval: int = 60,
+    *,
+    on_shutdown: OnShutdownFn | None = None,
 ) -> dict[str, Any]:
     """Run the shared coordinator event loop."""
     msg_server = await _start_msg_server(deps.operator_inbox, deps.msg_port)
@@ -151,6 +194,28 @@ async def run_event_loop(
     except Exception as e:
         logger.error("Coordinator fatal: %s", e, exc_info=True)
     finally:
+        coordinator_shutdown_summary: str | None = None
+        try:
+            findings_snapshot = format_coordinator_findings_snapshot(deps)
+        except Exception as e:
+            findings_snapshot = f"=== Session findings snapshot (build error: {e}) ==="
+        logger.info("%s", findings_snapshot)
+
+        if on_shutdown:
+            try:
+                coordinator_shutdown_summary = await asyncio.wait_for(
+                    on_shutdown(deps, findings_snapshot),
+                    timeout=120.0,
+                )
+                if coordinator_shutdown_summary:
+                    logger.info("--- Coordinator narrative summary ---\n%s", coordinator_shutdown_summary)
+            except asyncio.TimeoutError:
+                logger.warning("Coordinator shutdown summary timed out after 120s")
+            except asyncio.CancelledError:
+                logger.warning("Coordinator shutdown summary cancelled")
+            except Exception as e:
+                logger.warning("Coordinator shutdown summary failed: %s", e, exc_info=True)
+
         if msg_server:
             msg_server.close()
             await msg_server.wait_closed()
@@ -166,6 +231,8 @@ async def run_event_loop(
         "results": deps.results,
         "total_cost_usd": cost_tracker.total_cost_usd,
         "total_tokens": cost_tracker.total_tokens,
+        "findings_snapshot": findings_snapshot,
+        "coordinator_shutdown_summary": coordinator_shutdown_summary,
     }
 
 
